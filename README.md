@@ -1,3 +1,1 @@
-WebSim Vibe Coding Starter
-
-all tools are free 
+Sitemap: https://itch.io/sitemap.xml
