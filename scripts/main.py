@@ -54,7 +54,7 @@ def aggregate_all_domains(domain_file):
             history_dfs.append(df)
         except Exception as e:
             print(f"读取历史文件失败 {hf}: {e}")
-
+    firstime=False
     if history_dfs:
         all_history_df = pd.concat(history_dfs, ignore_index=True)
         all_history_df.drop_duplicates(subset=['loc'], inplace=True)
@@ -62,6 +62,7 @@ def aggregate_all_domains(domain_file):
     else:
         all_history_df = pd.DataFrame(columns=['loc', 'lastmodified', 'added_date'])
         history_set = set()
+        firstime=True
 
     # --- 遍历域名抓取当天数据 ---
     domains = read_domains(domain_file)
@@ -98,7 +99,7 @@ def aggregate_all_domains(domain_file):
 
     # --- 写入今日新增 newurl_YYYY-MM-DD.csv ---
     newurl_path = os.path.join(results_folder, f'newurl_{today}.csv')
-    if all_new_url_details:
+    if firstime==False and all_new_url_details:
         with open(newurl_path, 'w', encoding='utf-8', newline='') as nf:
             writer = csv.DictWriter(nf, fieldnames=['loc', 'lastmodified', 'added_date'])
             writer.writeheader()
