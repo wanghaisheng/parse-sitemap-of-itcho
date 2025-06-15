@@ -1,135 +1,85 @@
 import os
 import csv
-import sys
-from datetime import datetime
-import requests
-import re
-# sys.path.append(os.path.join(os.path.dirname(__file__), 'scripts'))
-from parse_url_from_sitemap import collect_all_url_details_from_sitemap
+import glob
+import datetime
+import pandas as pd
 
-def read_domains(domain_file):
-    with open(domain_file, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip()]
+def aggregate_all_domains():
+    today = datetime.date.today().strftime('%Y-%m-%d')
+    date_folder = f'results/{today}'
+    os.makedirs(date_folder, exist_ok=True)
 
-def get_sitemap_url(domain):
-    if domain.startswith('http://') or domain.startswith('https://'):
-        base = domain
+    # === Step 1: Load historical all_domains_url_details_part*.csv ===
+    previous_data = []
+    for file in glob.glob('results/*/all_domains_url_details_part*.csv'):
+        try:
+            df = pd.read_csv(file)
+            previous_data.append(df)
+        except Exception as e:
+            print(f"Failed to read {file}: {e}")
+
+    if previous_data:
+        all_history_df = pd.concat(previous_data, ignore_index=True)
+        all_history_df.drop_duplicates(subset=['loc'], inplace=True)
+        history_set = set(all_history_df['loc'].values)
     else:
-        base = 'https://' + domain
-    return base.rstrip('/') + '/sitemap.xml'
+        history_set = set()
 
-def check_url_200(url):
-    try:
-        resp = requests.head(url, timeout=10, allow_redirects=True)
-        return resp.status_code == 200
-    except Exception:
-        return False
+    # === Step 2: Load current day's domain_url_details_*.csv ===
+    all_new_details = []
+    for file in glob.glob(os.path.join(date_folder, 'domain_url_details_*.csv')):
+        try:
+            with open(file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    all_new_details.append(row)
+        except Exception as e:
+            print(f"Failed to read {file}: {e}")
 
-def get_robots_sitemaps(domain):
-    if domain.startswith('http://') or domain.startswith('https://'):
-        base = domain
-    else:
-        base = 'https://' + domain
-    robots_url = base.rstrip('/') + '/robots.txt'
-    try:
-        resp = requests.get(robots_url, timeout=10)
-        if resp.status_code == 200:
-            sitemaps = re.findall(r'^Sitemap:\s*(\S+)', resp.text, re.MULTILINE)
-            return sitemaps
-    except Exception:
-        pass
-    return []
+    # === Step 3: Filter out duplicates ===
+    new_url_details = []
+    for row in all_new_details:
+        if row['loc'] not in history_set:
+            row['added_date'] = today
+            new_url_details.append(row)
 
-def aggregate_all_domains(domain_file, output_file):
-    domains = read_domains(domain_file)
-    all_url_details = []
-    today = datetime.now().strftime('%Y-%m-%d')
-    date_folder = f"results/{today}"
-    if not os.path.exists(date_folder):
-        os.makedirs(date_folder)
-    progress_file = os.path.join(date_folder, f'domain_progress_{today}.txt')
-    failed_file = os.path.join(date_folder, f'failed_domains_{today}.txt')
-    # 读取已处理进度
-    processed_domains = set()
-    if os.path.exists(progress_file):
-        with open(progress_file, 'r', encoding='utf-8') as pf:
-            processed_domains = set([line.strip() for line in pf if line.strip()])
-    failed_domains = set()
-    if os.path.exists(failed_file):
-        with open(failed_file, 'r', encoding='utf-8') as ff:
-            failed_domains = set([line.strip() for line in ff if line.strip()])
-    for domain in domains:
-        if domain in processed_domains:
-            continue
-        sitemap_url = get_sitemap_url(domain)
-        sitemap_urls_to_try = [sitemap_url]
-        if not check_url_200(sitemap_url):
-            print(f"Default sitemap not found for {domain}, checking robots.txt...")
-            robots_sitemaps = get_robots_sitemaps(domain)
-            if robots_sitemaps:
-                sitemap_urls_to_try = robots_sitemaps
-            else:
-                print(f"No sitemap found in robots.txt for {domain}")
-                failed_domains.add(domain)
-                with open(failed_file, 'a', encoding='utf-8') as ff:
-                    ff.write(domain + '\n')
-                with open(progress_file, 'a', encoding='utf-8') as pf:
-                    pf.write(domain + '\n')
-                continue
-        success = False
-        for sitemap_url in sitemap_urls_to_try:
-            print(f'Processing {sitemap_url}')
-            try:
-                url_details = collect_all_url_details_from_sitemap(sitemap_url, today=today)
-                # for d in url_details:
-                    # d['domain'] = domain
-                all_url_details.extend(url_details)
-                success = True
-                break  # Only process the first working sitemap
-            except Exception as e:
-                print(f'Failed to process {sitemap_url}: {e}')
-        if not success:
-            failed_domains.add(domain)
-            with open(failed_file, 'a', encoding='utf-8') as ff:
-                ff.write(domain + '\n')
-        with open(progress_file, 'a', encoding='utf-8') as pf:
-            pf.write(domain + '\n')
-    # Save all results
-    if all_url_details:
-        fieldnames = [
-            # 'domain', 
-            'loc', 'lastmodified', 'added_date']
-        output_file_with_date_base = os.path.join(date_folder, f'all_domains_url_details_{today}')
-        max_size = 90 * 1024 * 1024  # 90MB
-        file_index = 1
-        output_file_with_date = f"{output_file_with_date_base}_part{file_index}.csv"
-        f = open(output_file_with_date, 'w', encoding='utf-8', newline='')
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    if not new_url_details:
+        print("No new URLs found today.")
+        return
+
+    # === Step 4: Save to newurl_YYYY-MM-DD.csv ===
+    newurl_file = os.path.join(date_folder, f'newurl_{today}.csv')
+    with open(newurl_file, 'w', encoding='utf-8', newline='') as nf:
+        writer = csv.DictWriter(nf, fieldnames=['loc', 'lastmodified', 'added_date'])
         writer.writeheader()
-        current_size = f.tell()
-        for i, d in enumerate(all_url_details):
+        for d in new_url_details:
             writer.writerow(d)
-            # 检查文件大小，超过90M则切换新文件
-            if f.tell() >= max_size:
-                f.close()
-                file_index += 1
-                output_file_with_date = f"{output_file_with_date_base}_part{file_index}.csv"
-                f = open(output_file_with_date, 'w', encoding='utf-8', newline='')
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-        f.close()
-        print(f"Aggregated {len(all_url_details)} URLs from {len(domains)} domains. Saved to {output_file_with_date_base}_part*.csv")
-    else:
-        print("No URLs found.")
+    print(f"Saved {len(new_url_details)} new URLs to {newurl_file}")
 
-def main():
-    domain_file = 'domainlist.csv'
-    today = datetime.now().strftime('%Y-%m-%d')
-    date_folder = f"results/{today}"
-    if not os.path.exists(date_folder):
-        os.makedirs(date_folder)
-    output_file = os.path.join(date_folder, f'all_domains_url_details_{today}.csv')
-    aggregate_all_domains(domain_file, output_file)
+    # === Step 5: Write to segmented all_domains_url_details_part*.csv ===
+    output_file_base = os.path.join(date_folder, 'all_domains_url_details')
+    max_size = 90 * 1024 * 1024  # 90MB
+    file_index = 1
 
-if __name__ == '__main__':
-    main()
+    # Find the last used index to continue appending
+    while os.path.exists(f"{output_file_base}_part{file_index}.csv"):
+        file_index += 1
+
+    output_file = f"{output_file_base}_part{file_index}.csv"
+    f = open(output_file, 'w', encoding='utf-8', newline='')
+    writer = csv.DictWriter(f, fieldnames=['loc', 'lastmodified', 'added_date'])
+    writer.writeheader()
+    current_size = f.tell()
+
+    for d in new_url_details:
+        writer.writerow(d)
+        if f.tell() >= max_size:
+            f.close()
+            file_index += 1
+            output_file = f"{output_file_base}_part{file_index}.csv"
+            f = open(output_file, 'w', encoding='utf-8', newline='')
+            writer = csv.DictWriter(f, fieldnames=['loc', 'lastmodified', 'added_date'])
+            writer.writeheader()
+
+    f.close()
+    print(f"All new URLs written to segmented part files starting with: {output_file_base}_part{file_index}.csv")
