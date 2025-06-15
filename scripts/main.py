@@ -1,85 +1,114 @@
 import os
-import csv
 import glob
-import datetime
 import pandas as pd
+from datetime import datetime
 
-def aggregate_all_domains():
-    today = datetime.date.today().strftime('%Y-%m-%d')
-    date_folder = f'results/{today}'
-    os.makedirs(date_folder, exist_ok=True)
+# ---------- 参数设置 ----------
+DATA_DIR = "results"
+HISTORY_PREFIX = "all_domains_url_details_part"
+HISTORY_LIMIT_MB = 90
+INDEX_FILE = os.path.join(DATA_DIR, "index.csv")
+SUMMARY_FILE = os.path.join(DATA_DIR, "summary.csv")
+TODAY = datetime.today().strftime("%Y-%m-%d")
+NEW_URL_FILE = os.path.join(DATA_DIR, f"newurl_{TODAY}.csv")
 
-    # === Step 1: Load historical all_domains_url_details_part*.csv ===
-    previous_data = []
-    for file in glob.glob('results/*/all_domains_url_details_part*.csv'):
-        try:
-            df = pd.read_csv(file)
-            previous_data.append(df)
-        except Exception as e:
-            print(f"Failed to read {file}: {e}")
 
-    if previous_data:
-        all_history_df = pd.concat(previous_data, ignore_index=True)
-        all_history_df.drop_duplicates(subset=['loc'], inplace=True)
-        history_set = set(all_history_df['loc'].values)
+# ---------- 加载新数据 ----------
+def load_today_data():
+    # 可以根据实际来源读取今日数据，例如直接从网络或变量传入，这里以文件模拟
+    today_raw_file = f"raw_data_{TODAY}.csv"  # 替换成实际变量或文件名
+    if not os.path.exists(today_raw_file):
+        print(f"❌ 未找到今日数据文件：{today_raw_file}")
+        return pd.DataFrame()
+    df = pd.read_csv(today_raw_file).drop_duplicates(subset=["loc"])
+    df["added_date"] = TODAY
+    return df
+
+
+# ---------- 加载历史数据并合并 ----------
+def load_full_history():
+    part_files = sorted(glob.glob(os.path.join(DATA_DIR, f"{HISTORY_PREFIX}*.csv")))
+    all_parts = [pd.read_csv(f) for f in part_files]
+    return pd.concat(all_parts, ignore_index=True) if all_parts else pd.DataFrame(columns=["loc", "lastmodified", "added_date"])
+
+
+# ---------- 保存历史分片 ----------
+def save_partitioned_history(df):
+    df = df.drop_duplicates(subset=["loc"]).reset_index(drop=True)
+    current_part = 1
+    start = 0
+    total = len(df)
+    index_entries = []
+
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    while start < total:
+        end = min(start + 100_000, total)
+        part_df = df.iloc[start:end]
+        part_filename = f"{HISTORY_PREFIX}{current_part}.csv"
+        part_path = os.path.join(DATA_DIR, part_filename)
+        part_df.to_csv(part_path, index=False)
+
+        index_entries.append({
+            "part_file": part_filename,
+            "start_index": start,
+            "end_index": end - 1,
+            "num_records": len(part_df),
+            "last_updated": TODAY
+        })
+        current_part += 1
+        start = end
+
+    pd.DataFrame(index_entries).to_csv(INDEX_FILE, index=False)
+
+
+# ---------- 保存今日新增 ----------
+def save_new_urls(new_urls):
+    new_urls.to_csv(NEW_URL_FILE, index=False)
+
+
+# ---------- 更新每日统计 ----------
+def update_summary(today_total, new_count, cumulative_count):
+    summary_data = {
+        "date": TODAY,
+        "total_checked": today_total,
+        "new_added": new_count,
+        "cumulative_total": cumulative_count
+    }
+
+    if os.path.exists(SUMMARY_FILE):
+        summary_df = pd.read_csv(SUMMARY_FILE)
+        summary_df = summary_df[summary_df["date"] != TODAY]
+        summary_df = pd.concat([summary_df, pd.DataFrame([summary_data])])
     else:
-        history_set = set()
+        summary_df = pd.DataFrame([summary_data])
 
-    # === Step 2: Load current day's domain_url_details_*.csv ===
-    all_new_details = []
-    for file in glob.glob(os.path.join(date_folder, 'domain_url_details_*.csv')):
-        try:
-            with open(file, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    all_new_details.append(row)
-        except Exception as e:
-            print(f"Failed to read {file}: {e}")
+    summary_df.to_csv(SUMMARY_FILE, index=False)
 
-    # === Step 3: Filter out duplicates ===
-    new_url_details = []
-    for row in all_new_details:
-        if row['loc'] not in history_set:
-            row['added_date'] = today
-            new_url_details.append(row)
 
-    if not new_url_details:
-        print("No new URLs found today.")
+# ---------- 主执行逻辑 ----------
+def main():
+    today_data = load_today_data()
+    if today_data.empty:
         return
 
-    # === Step 4: Save to newurl_YYYY-MM-DD.csv ===
-    newurl_file = os.path.join(date_folder, f'newurl_{today}.csv')
-    with open(newurl_file, 'w', encoding='utf-8', newline='') as nf:
-        writer = csv.DictWriter(nf, fieldnames=['loc', 'lastmodified', 'added_date'])
-        writer.writeheader()
-        for d in new_url_details:
-            writer.writerow(d)
-    print(f"Saved {len(new_url_details)} new URLs to {newurl_file}")
+    history_df = load_full_history()
 
-    # === Step 5: Write to segmented all_domains_url_details_part*.csv ===
-    output_file_base = os.path.join(date_folder, 'all_domains_url_details')
-    max_size = 90 * 1024 * 1024  # 90MB
-    file_index = 1
+    # 过滤出新增 URL
+    if not history_df.empty:
+        new_urls = today_data[~today_data["loc"].isin(history_df["loc"])]
+        updated_history = pd.concat([history_df, new_urls], ignore_index=True)
+    else:
+        new_urls = today_data.copy()
+        updated_history = new_urls.copy()
 
-    # Find the last used index to continue appending
-    while os.path.exists(f"{output_file_base}_part{file_index}.csv"):
-        file_index += 1
+    # 保存结果
+    save_new_urls(new_urls)
+    save_partitioned_history(updated_history)
+    update_summary(today_total=len(today_data), new_count=len(new_urls), cumulative_count=len(updated_history))
 
-    output_file = f"{output_file_base}_part{file_index}.csv"
-    f = open(output_file, 'w', encoding='utf-8', newline='')
-    writer = csv.DictWriter(f, fieldnames=['loc', 'lastmodified', 'added_date'])
-    writer.writeheader()
-    current_size = f.tell()
+    print(f"✅ 处理完成：新增 {len(new_urls)} 条，累计 {len(updated_history)} 条")
 
-    for d in new_url_details:
-        writer.writerow(d)
-        if f.tell() >= max_size:
-            f.close()
-            file_index += 1
-            output_file = f"{output_file_base}_part{file_index}.csv"
-            f = open(output_file, 'w', encoding='utf-8', newline='')
-            writer = csv.DictWriter(f, fieldnames=['loc', 'lastmodified', 'added_date'])
-            writer.writeheader()
 
-    f.close()
-    print(f"All new URLs written to segmented part files starting with: {output_file_base}_part{file_index}.csv")
+if __name__ == "__main__":
+    main()
