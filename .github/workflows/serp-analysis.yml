@@ -31,7 +31,7 @@ jobs:
           EXCLUDE_PATTERNS: "about,career,privacy,terms,contact,faq,support,legal,cookie"
 
       - name: Upload analysis results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: serp-analysis
           path: scripts/serp_analysis.json
